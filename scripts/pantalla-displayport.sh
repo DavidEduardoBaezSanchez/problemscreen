@@ -62,11 +62,18 @@ aplicar_60hz() {
 }
 
 # --- Opcion 2: Descongelar la pantalla sin reiniciar ---
+# `cinnamon --replace` reinicia el compositor: mata al Cinnamon actual (el que
+# sostiene esta terminal). Por eso hay que desprenderlo del todo (nohup +
+# setsid + redireccion) y SALIR del script enseguida, o el menu queda colgado
+# esperando un read sobre una terminal que se esta muriendo.
 descongelar() {
   info "Reiniciando Cinnamon (no cierra tus ventanas)..."
-  cinnamon --replace -d :0 &
+  info "El escritorio va a parpadear; es normal. Volves en unos segundos."
+  setsid nohup cinnamon --replace -d :0 >/dev/null 2>&1 &
   disown
-  ok "Cinnamon relanzado. La pantalla deberia responder en unos segundos."
+  ok "Cinnamon relanzado. Cerrando el script (el menu no puede sobrevivir al reinicio del escritorio)."
+  # Salida inmediata: no tiene sentido volver al menu tras reiniciar Cinnamon.
+  exit 0
 }
 
 # --- Opcion 3: Ver las frecuencias actuales de los monitores ---
