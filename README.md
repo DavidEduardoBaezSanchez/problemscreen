@@ -30,7 +30,9 @@ AMDGPU(0): Page flip failed: Invalid argument
 drmmode_do_crtc_dpms cannot get last vblank counter
 ```
 
-**Matching both outputs to 60Hz eliminated the freeze.** This was confirmed live: the frozen screen recovered the instant DisplayPort-2 was set to 60Hz.
+**Matching both outputs to 60Hz was the decisive fix.** This was confirmed live: the frozen screen recovered the instant DisplayPort-2 was set to 60Hz. It reduced the failures dramatically — from **16 `Page flip failed` events per boot down to a single isolated one**.
+
+A residual freeze can still happen at 60Hz (one isolated event after ~43 min of uptime in testing). `dmesg` showed **no GPU reset, ring timeout, or fence error** — only the display-layer flip failure — which points at an `amdgpu` display presentation issue rather than the GPU itself locking up. A second, driver-level layer (see [Layered fix](#layered-fix)) addresses that residual.
 
 ### Diagnostic path (for reference)
 
@@ -39,7 +41,7 @@ Before landing on the refresh-rate cause, two earlier factors were investigated 
 1. **AMD overdrive** (`ppfeaturemask=0xFFF7FFFF`) plus `amdgpu.lockup_timeout=0`, which disabled the GPU's auto-recovery. These were installed following an incorrect "for LLM performance" recommendation. Overdrive does **not** accelerate LLM inference (Vulkan uses automatic DPM, not manual PowerPlay clocks). Both were reverted.
 2. **`CLUTTER_VBLANK=none`** in `/etc/environment` to stop muffin/Clutter from stalling on page flips. It stayed active but was **not sufficient on its own** — the freeze returned with `Page flip failed` reappearing in the log.
 
-The decisive fix was equalizing the refresh rates.
+The decisive fix was equalizing the refresh rates, backed by a driver-level parameter for the residual case.
 
 ## The fix
 
@@ -50,6 +52,37 @@ xrandr --output DisplayPort-2 --mode 1920x1080 --rate 60.00
 ```
 
 Because `xrandr` settings are **not persistent** across reboots or monitor hotplug, this project ships a single script that applies the fix, persists it at login, and bundles the recovery/diagnostic helpers.
+
+## Layered fix
+
+The freeze is addressed in two complementary layers. Apply them in order, one at a time, verifying each before moving on.
+
+### Layer 1 — Equal refresh rates (primary fix)
+
+Force both monitors to 60Hz. This is what the bundled script automates and what removed the vast majority of the failures. See [Usage](#usage) and [Make it permanent](#make-it-permanent).
+
+### Layer 2 — Driver parameter for the residual (GRUB)
+
+For the isolated event that can still occur at 60Hz, add an `amdgpu` debug mask to the kernel command line. This stabilizes display page flips at the driver level.
+
+```bash
+# 1. Back up the current GRUB config
+sudo cp /etc/default/grub ~/grub-backup-$(date +%Y%m%d-%H%M%S).bak
+
+# 2. Add amdgpu.dcdebugmask=0x10 to GRUB_CMDLINE_LINUX_DEFAULT, keeping amdgpu.dc=1
+#    Target line should read:
+#    GRUB_CMDLINE_LINUX_DEFAULT="quiet splash amdgpu.dc=1 amdgpu.dcdebugmask=0x10"
+sudoedit /etc/default/grub
+
+# 3. Regenerate GRUB and reboot
+sudo update-grub
+sudo reboot
+
+# 4. After reboot, verify the parameter is active
+cat /proc/cmdline   # should contain amdgpu.dcdebugmask=0x10
+```
+
+To roll back, restore the backup and run `sudo update-grub`.
 
 ## Usage
 
@@ -69,7 +102,7 @@ Because `xrandr` settings are **not persistent** across reboots or monitor hotpl
 | Option | Action |
 |--------|--------|
 | 1 | **Apply 60Hz now** — hot fix, sets DisplayPort-2 to 60Hz immediately |
-| 2 | **Unfreeze the screen** — restarts Cinnamon (`cinnamon --replace`) without closing windows |
+| 2 | **Unfreeze the screen** — restarts Cinnamon (detached) without closing windows, then exits the script |
 | 3 | **Show refresh rates** — lists both monitors and their active mode |
 | 4 | **Revert the fix** — removes the login autostart entry |
 | 5 | **Install/repair autostart** — writes a `.desktop` that applies 60Hz at every login |
@@ -80,27 +113,35 @@ Run option **5** once. It installs `~/.config/autostart/pantalla-displayport.des
 
 ### Emergency recovery
 
-If the screen freezes, from any terminal (or a TTY via `Ctrl+Alt+F2`):
+If the screen freezes, use the script's unfreeze option — it restarts Cinnamon fully detached from the terminal and exits cleanly, so it won't hang:
 
 ```bash
-cinnamon --replace -d :0 &
+./scripts/pantalla-displayport.sh 2
 ```
+
+Or, from any terminal (or a TTY via `Ctrl+Alt+F2`), the equivalent one-liner:
+
+```bash
+setsid nohup cinnamon --replace -d :0 >/dev/null 2>&1 &
+```
+
+> **Note:** `cinnamon --replace` restarts the compositor, which kills the Cinnamon instance that owns your terminal. Detaching it (`setsid nohup ... &`) is required — a bare `cinnamon --replace &` leaves the calling shell/menu hanging when the parent desktop dies. The desktop will flicker; that's expected.
 
 ## Testing status
 
 This is a personal, single-developer fix validated on the real hardware above.
 
 - ✅ **Root cause confirmed live** — the frozen screen recovered the exact moment DisplayPort-2 was set to 60Hz.
+- ✅ **Layer 1 effective** — reduced `Page flip failed` from 16 per boot to a single isolated event.
 - ✅ **Autostart verified** — `--autostart` mode runs at login, applies 60Hz, and logs the result (`OK: DisplayPort-2 -> 1920x1080@60.00Hz`).
+- ✅ **Unfreeze fixed** — option 2 now detaches Cinnamon and exits, resolving a hang where the interactive menu looped after the desktop restarted.
 - ✅ **Script syntax** — passes `bash -n` with no errors.
+- 🔲 **Layer 2 under observation** — `amdgpu.dcdebugmask=0x10` applied via GRUB; watching for a boot with zero `Page flip failed` events.
 - 🔲 **Observation phase** — 2–3 days of heavy real-world use (terminal scroll, browsing) without a freeze to consider the case fully closed.
 
-### If the freeze ever returns at 60Hz
+### Fallback if the freeze persists after both layers
 
-Fallback plans, in order (one change at a time):
-
-- **Plan B** — add `amdgpu.dcdebugmask=0x10` to the kernel line in GRUB (more invasive, keeps 74.97Hz).
-- **Plan C** — already applied here: force both monitors to 60Hz.
+- **Check the DisplayPort cable/link** — an EDID re-detection right after a flip failure can indicate an unstable DP link. Try a known-good DP 1.4 cable or a firmer reconnection before further software changes.
 
 ## Adapting to your setup
 
