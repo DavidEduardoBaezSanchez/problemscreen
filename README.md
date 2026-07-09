@@ -43,6 +43,33 @@ Before landing on the refresh-rate cause, two earlier factors were investigated 
 
 The decisive fix was equalizing the refresh rates, backed by a driver-level parameter for the residual case.
 
+## Diagnosis timeline
+
+> This section is an honest log of how the diagnosis evolved. The `Page flip failed` symptom had **several layered causes**, and the investigation moved from software toward hardware as evidence accumulated. It is documented here because the same symptom can have very different root causes.
+
+| Stage | Hypothesis | Action | Result |
+|-------|-----------|--------|--------|
+| 1 | AMD overdrive / disabled GPU auto-recovery | Reverted `ppfeaturemask` + `amdgpu.lockup_timeout=0` | Contributing factor, not decisive |
+| 2 | Compositor stalling on page flips | `CLUTTER_VBLANK=none` | Active but insufficient — freeze returned |
+| 3 | Mismatched refresh rates (60 vs 74.97Hz) | Force both outputs to 60Hz | **Big win** — `Page flip failed` 16 → 1 per boot |
+| 4 | Driver-level flip presentation | `amdgpu.dcdebugmask=0x10` in GRUB | Applied; residual event still occurred |
+| 5 | Unstable physical DisplayPort link | Unplugged the DP cable of the affected monitor | **Screen unfroze instantly** — points at the link |
+| 6 | Bad cable/port vs. bad monitor | Moved the affected monitor from DP to **HDMI** | Problem persisted **and worsened** (`Page flip failed` climbed; see below) |
+
+### Key evidence: corrupted EDID reads
+
+The strongest clue came from repeated EDID re-detections in `Xorg.0.log`. A healthy monitor reports a **stable** EDID. This one did not:
+
+```
+AMDGPU(0): EDID vendor "GSM", prod id 23349
+AMDGPU(0): EDID vendor "GSM", prod id 23348
+AMDGPU(0): EDID vendor "GSM", prod id 23411
+```
+
+The **product id changes on each read** (23349 / 23348 / 23411), meaning the EDID bytes are arriving corrupted. This happened over **both** the DisplayPort and HDMI inputs, which shifts the prime suspect away from a single cable or GPU port and toward the **monitor itself** (its input/EDID circuitry or power delivery).
+
+**Current working hypothesis:** the affected monitor (an LG / "GSM" panel) has a failing video input or unstable power, corrupting link negotiation regardless of the input used. The software layers below **mitigate** the symptom but do not cure it. Investigation is ongoing — see [Testing status](#testing-status).
+
 ## The fix
 
 Force DisplayPort-2 to 60Hz so both monitors share the same refresh rate:
@@ -136,12 +163,20 @@ This is a personal, single-developer fix validated on the real hardware above.
 - ✅ **Autostart verified** — `--autostart` mode runs at login, applies 60Hz, and logs the result (`OK: DisplayPort-2 -> 1920x1080@60.00Hz`).
 - ✅ **Unfreeze fixed** — option 2 now detaches Cinnamon and exits, resolving a hang where the interactive menu looped after the desktop restarted.
 - ✅ **Script syntax** — passes `bash -n` with no errors.
-- 🔲 **Layer 2 under observation** — `amdgpu.dcdebugmask=0x10` applied via GRUB; watching for a boot with zero `Page flip failed` events.
-- 🔲 **Observation phase** — 2–3 days of heavy real-world use (terminal scroll, browsing) without a freeze to consider the case fully closed.
+- ✅ **Physical link implicated** — unplugging the affected monitor's cable unfroze the screen instantly.
+- ⚠️ **Not fully solved** — the software layers mitigate but do not cure it. Switching the monitor from DisplayPort to HDMI did **not** help (it got worse), and EDID reads are corrupted on both inputs — the current suspect is the monitor itself.
+- 🔲 **Hardware isolation pending** — test the suspect monitor on another machine (or swap the two monitors' ports) to confirm monitor vs. GPU, and check the monitor's power supply.
 
-### Fallback if the freeze persists after both layers
+### Hardware troubleshooting (current focus)
 
-- **Check the DisplayPort cable/link** — an EDID re-detection right after a flip failure can indicate an unstable DP link. Try a known-good DP 1.4 cable or a firmer reconnection before further software changes.
+The evidence now points at the physical link / monitor rather than software. Work through these, cheapest first:
+
+1. **Reseat the cable** firmly at both ends.
+2. **Swap cables and ports** — if the fault follows the monitor, it's the monitor; if it stays on the port, it's the GPU/cable.
+3. **Test the suspect monitor on another computer** — the definitive isolation test.
+4. **Check the monitor's power supply** — a monitor that resets under unstable power produces exactly this corrupted-EDID / re-detection pattern.
+
+Keep the software layers (60Hz + `dcdebugmask`) in place meanwhile — they reduce the symptom's frequency and cause no harm.
 
 ## Adapting to your setup
 
