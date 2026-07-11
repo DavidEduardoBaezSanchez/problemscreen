@@ -182,6 +182,96 @@ The evidence now points at the physical link / monitor rather than software. Wor
 
 Keep the software layers (60Hz + `dcdebugmask`) in place meanwhile — they reduce the symptom's frequency and cause no harm.
 
+## Diagnostic commands
+
+All commands used during the investigation, grouped by purpose. Run them from any terminal. Most do not require `sudo`.
+
+### Monitor identification and status
+
+```bash
+# List all outputs, their connection state, and active mode (* = current)
+xrandr --query
+
+# Kernel-level connector status (DP-1, DP-2, HDMI-A-1, etc.)
+for f in /sys/class/drm/card*/card*/status; do echo "$f: $(cat $f)"; done
+
+# List available connectors by name
+ls -d /sys/class/drm/card*/card*-* | grep -iE "DP|HDMI"
+
+# Show the active mode for a specific output (e.g. DisplayPort-2)
+xrandr --query --verbose | grep -A5 "DisplayPort-2"
+```
+
+### Page flip and EDID diagnostics
+
+```bash
+# Count page flip failures in the current X session
+grep -c "Page flip failed" /var/log/Xorg.0.log
+
+# Show the first and last flip failure (timestamp = seconds since boot)
+grep "Page flip failed" /var/log/Xorg.0.log | head -1
+grep "Page flip failed" /var/log/Xorg.0.log | tail -1
+
+# Full context around flip failures (what happened just before)
+grep -n -B2 -A2 "flip queue failed" /var/log/Xorg.0.log
+
+# EDID re-detections — a healthy monitor shows a stable product id.
+# A changing product id (e.g. 23349 → 23348 → 23411) means corrupted EDID bytes.
+grep "EDID vendor" /var/log/Xorg.0.log
+```
+
+### GPU and driver diagnostics
+
+```bash
+# Kernel-level GPU errors (resets, ring timeouts, fence errors, link issues)
+# Requires sudo for full dmesg access
+sudo dmesg | grep -iE "amdgpu|drm|reset|ring|timeout|fence|link|dp_" | tail -25
+
+# Check if CLUTTER_VBLANK=none is active in the current shell
+env | grep CLUTTER_VBLANK
+
+# Check if CLUTTER_VBLANK=none is persistent in /etc/environment
+grep -i clutter /etc/environment
+
+# Check if AMD overdrive is disabled (should show .disabled)
+ls -la /etc/modprobe.d/ | grep -i amdgpu
+
+# GPU power state (auto = normal DPM)
+cat /sys/class/drm/card*/device/power_dpm_force_performance_level
+
+# GPU clock speeds (shows which clocks are active)
+cat /sys/class/drm/card*/device/pp_dpm_sclk
+```
+
+### GRUB and boot parameters
+
+```bash
+# Verify amdgpu.dcdebugmask=0x10 is active in the running kernel
+grep -o "amdgpu.dcdebugmask=[^ ]*" /proc/cmdline
+
+# Show the full kernel command line
+cat /proc/cmdline
+
+# Show current GRUB config (before editing)
+grep GRUB_CMDLINE_LINUX_DEFAULT /etc/default/grub
+```
+
+### Recovery commands
+
+```bash
+# Unfreeze the screen (restarts Cinnamon fully detached, exits cleanly)
+./scripts/pantalla-displayport.sh 2
+
+# Manual one-liner equivalent (for TTY or remote shell)
+setsid nohup cinnamon --replace -d :0 >/dev/null 2>&1 &
+
+# Force 60Hz on the secondary output immediately
+./scripts/pantalla-displayport.sh 1
+
+# Or manually with xrandr
+xrandr --output DisplayPort-2 --mode 1920x1080 --rate 60.00
+```
+
 ## Adapting to your setup
 
 The script's configuration lives in variables at the top of `scripts/pantalla-displayport.sh`:
