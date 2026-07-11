@@ -55,6 +55,7 @@ The decisive fix was equalizing the refresh rates, backed by a driver-level para
 | 4 | Driver-level flip presentation | `amdgpu.dcdebugmask=0x10` in GRUB | Applied; residual event still occurred |
 | 5 | Unstable physical DisplayPort link | Unplugged the DP cable of the affected monitor | **Screen unfroze instantly** — points at the link |
 | 6 | Bad cable/port vs. bad monitor | Moved the affected monitor from DP to **HDMI** | Problem persisted **and worsened** (`Page flip failed` climbed; see below) |
+| 7 | Hot-plug reverts the 60Hz fix | Reconnected the DP cable after testing HDMI | Monitor renegotiated back to 74.97Hz; `Page flip failed` jumped back to 16; re-aplying 60Hz unfroze the screen again |
 
 ### Key evidence: corrupted EDID reads
 
@@ -138,6 +139,8 @@ To roll back, restore the backup and run `sudo update-grub`.
 
 Run option **5** once. It installs `~/.config/autostart/pantalla-displayport.desktop`, which calls the script in `--autostart` mode at every login (with a short delay so the display is initialized first) and logs to `~/.local/share/pantalla-displayport.log`.
 
+> **Limitation:** The autostart only fires at login. If you hot-plug the DisplayPort cable (or the monitor renegotiates on its own), it will default back to its native refresh rate (74.97Hz) and the autostart will not re-apply 60Hz. In that case, run option **1** manually or reboot. This is by design — `xrandr` has no built-in hot-plug watcher, and adding one (udev rule, xevent listener) would be overkill for a monitor that is likely failing.
+
 ### Emergency recovery
 
 If the screen freezes, use the script's unfreeze option — it restarts Cinnamon fully detached from the terminal and exits cleanly, so it won't hang:
@@ -165,6 +168,7 @@ This is a personal, single-developer fix validated on the real hardware above.
 - ✅ **Script syntax** — passes `bash -n` with no errors.
 - ✅ **Physical link implicated** — unplugging the affected monitor's cable unfroze the screen instantly.
 - ⚠️ **Not fully solved** — the software layers mitigate but do not cure it. Switching the monitor from DisplayPort to HDMI did **not** help (it got worse), and EDID reads are corrupted on both inputs — the current suspect is the monitor itself.
+- ⚠️ **Hot-plug reverts Layer 1** — reconnecting the DP cable causes the monitor to renegotiate back to 74.97Hz, overriding the 60Hz fix. Re-applying option 1 restores it. The autostart only covers login, not hot-plug.
 - 🔲 **Hardware isolation pending** — test the suspect monitor on another machine (or swap the two monitors' ports) to confirm monitor vs. GPU, and check the monitor's power supply.
 
 ### Hardware troubleshooting (current focus)
