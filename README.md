@@ -6,6 +6,44 @@ Fix and management tooling for an intermittent **DisplayPort screen freeze** on 
 [![Shell: Bash](https://img.shields.io/badge/Shell-Bash-4EAA25.svg?logo=gnu-bash&logoColor=white)](https://www.gnu.org/software/bash/)
 [![Platform: Linux Mint](https://img.shields.io/badge/Platform-Linux%20Mint-87CF3E.svg?logo=linuxmint&logoColor=white)](https://linuxmint.com/)
 
+## Requirements
+
+- **Linux** with X11 session (tested on Linux Mint 22.3)
+- **AMD GPU** with the `amdgpu` kernel driver
+- **Cinnamon** desktop (used by the unfreeze command)
+- **`xrandr`** (pre-installed on most Mint/Cinnamon setups)
+- **Bash 4+**
+
+Other desktop environments or distros may work, but the recovery command (`cinnamon --replace`) and the autostart mechanism are Cinnamon-specific.
+
+## Quick start
+
+If your secondary screen freezes and you just want it back:
+
+```bash
+# 1. Clone the repo
+git clone https://github.com/DavidEduardoBaezSanchez/problemscreen.git
+cd problemscreen
+
+# 2. Make the script executable (first time only)
+chmod +x scripts/pantalla-displayport.sh
+
+# 3. Force 60Hz on the secondary output now
+./scripts/pantalla-displayport.sh 1
+```
+
+The screen should unfreeze within a few seconds. To make it permanent across reboots, run option **5** once:
+
+```bash
+./scripts/pantalla-displayport.sh 5
+```
+
+For the full interactive menu (includes unfreeze, diagnostics, and revert):
+
+```bash
+./scripts/pantalla-displayport.sh
+```
+
 ## The problem
 
 On a dual-monitor setup, the secondary screen connected over **DisplayPort** would **freeze intermittently**. The freeze happened mostly under load — heavy terminal scrolling/output or browsing — and could only be recovered by power-cycling the monitor or switching desktops.
@@ -23,11 +61,27 @@ On a dual-monitor setup, the secondary screen connected over **DisplayPort** wou
 
 ## Root cause
 
-The two monitors were running at **mismatched refresh rates**: DisplayPort-1 at **60Hz** and DisplayPort-2 at **74.97Hz**. The `amdgpu` driver could not reliably synchronize page flips across the two unaligned clocks, and under load it failed them. The signature in `Xorg.0.log`:
+The two monitors were running at **mismatched refresh rates**: DisplayPort-1 at **60Hz** and DisplayPort-2 at **74.97Hz**. The `amdgpu` driver could not reliably synchronize page flips across the two unaligned clocks, and under load it failed them.
+
+### What the error looks like
+
+When the screen freezes, the Xorg log records the failure. Check it with:
+
+```bash
+grep -c "Page flip failed" /var/log/Xorg.0.log
+```
+
+If the count is **greater than 0**, you have active flip failures. A typical log entry looks like this:
 
 ```
-AMDGPU(0): Page flip failed: Invalid argument
-drmmode_do_crtc_dpms cannot get last vblank counter
+[ 2623.705] (WW) AMDGPU(0): flip queue failed: Invalid argument
+[ 2623.705] (WW) AMDGPU(0): Page flip failed: Invalid argument
+```
+
+The number in brackets (`2623.705`) is seconds since boot — it tells you *when* the failure happened. If you also see repeated `EDID vendor` lines with the same vendor but **different product ids** (e.g. `prod id 23349` → `prod id 23348` → `prod id 23411`), that means the monitor's EDID is arriving corrupted, which points at a hardware issue with the monitor itself or its cable. Run:
+
+```bash
+grep "EDID vendor" /var/log/Xorg.0.log | tail -10
 ```
 
 **Matching both outputs to 60Hz was the decisive fix.** This was confirmed live: the frozen screen recovered the instant DisplayPort-2 was set to 60Hz. It reduced the failures dramatically — from **16 `Page flip failed` events per boot down to a single isolated one**.
